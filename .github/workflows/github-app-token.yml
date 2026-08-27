@@ -46,3 +46,6 @@ jobs:
           private-key: ${{ steps.fetch-pem.outputs.pem }}
           owner: khai-ups
           repositories: ${{ inputs.target_repo }}
+          # Minted here, consumed by the caller's separate job - the action's
+          # default post-step revocation would invalidate it before that job runs.
+          skip-token-revoke: true
