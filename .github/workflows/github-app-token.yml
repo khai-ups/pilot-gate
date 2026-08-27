@@ -55,7 +55,9 @@ jobs:
           private-key: ${{ steps.fetch-pem.outputs.pem }}
           owner: khai-ups
           repositories: ${{ inputs.target_repo }}
-          permission-actions: write
+          # Per-permission narrowing (permission-actions) needs a newer action
+          # version than this pin supports - scoping instead relies entirely on
+          # the App itself being granted only Actions: Read and write.
 
       - name: Dispatch target workflow
         env:
