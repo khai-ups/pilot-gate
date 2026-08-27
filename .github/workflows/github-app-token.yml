@@ -1,4 +1,4 @@
-name: Mint GitHub App Token
+name: Deliver via App Token
 
 on:
   workflow_call:
@@ -7,22 +7,28 @@ on:
         required: false
         type: string
         default: pilot-delivery
-        description: Repo (without owner) the minted token should be scoped to.
-    outputs:
-      token:
-        description: Short-lived GitHub App installation token scoped to target_repo.
-        value: ${{ jobs.mint.outputs.token }}
+        description: Repo (without owner) to check out and open the PR against.
+      pr_branch:
+        required: false
+        type: string
+        default: automation/update-image-tag
+      pr_title:
+        required: false
+        type: string
+        default: "[Automated] Update image tag (pilot)"
+      pr_body:
+        required: false
+        type: string
+        default: PLF-3217 pilot - proves the App-token broker path end to end.
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  mint:
-    name: Mint installation token
+  deliver:
+    name: Mint token and create delivery PR
     runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.app-token.outputs.token }}
     steps:
       - id: gcp-auth
         name: Authenticate to GCP via WIF
@@ -46,6 +52,27 @@ jobs:
           private-key: ${{ steps.fetch-pem.outputs.pem }}
           owner: khai-ups
           repositories: ${{ inputs.target_repo }}
-          # Minted here, consumed by the caller's separate job - the action's
-          # default post-step revocation would invalidate it before that job runs.
-          skip-token-revoke: true
+
+      - name: Checkout target repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: khai-ups/${{ inputs.target_repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target
+
+      - name: Bump image tag
+        run: echo "pilot-$(date -u +%Y%m%d%H%M%S)" > target/image-tag.txt
+        env:
+          TZ: UTC
+
+      - name: Create Delivery PR
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          path: target
+          token: ${{ steps.app-token.outputs.token }}
+          branch: ${{ inputs.pr_branch }}
+          delete-branch: true
+          title: ${{ inputs.pr_title }}
+          body: ${{ inputs.pr_body }}
+          committer: pilot-gate-broker <noreply@github.com>
+          author: pilot-gate-broker <noreply@github.com>
