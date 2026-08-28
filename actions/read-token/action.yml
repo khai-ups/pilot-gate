@@ -1,0 +1,40 @@
+name: Mint pilot-watch read token
+description: >
+  Mints a short-lived GitHub App (pilot-watch) installation token scoped to
+  target_repo, for use within the SAME job (composite action outputs don't
+  survive crossing job boundaries when masked - see github-app-token.yml).
+inputs:
+  target_repo:
+    required: false
+    default: pilot-terragrunt-modules
+    description: Repo (without owner) to scope the token to.
+outputs:
+  token:
+    description: Short-lived installation token.
+    value: ${{ steps.app-token.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - id: gcp-auth
+      name: Authenticate to GCP via WIF (pilot-watch-provider)
+      uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
+      with:
+        project_id: upsidr-platform-dev
+        workload_identity_provider: projects/41914822026/locations/global/workloadIdentityPools/github-pilot/providers/pilot-watch-provider
+
+    - id: fetch-pem
+      name: Fetch App private key
+      uses: google-github-actions/get-secretmanager-secrets@95a0b09b8348ef3d02c68c6ba5662a037e78d713 # v2.1.4
+      with:
+        secrets: |-
+          pem:projects/upsidr-platform-dev/secrets/pilot-watch-github-app-pem
+
+    - id: app-token
+      name: Mint installation token
+      uses: actions/create-github-app-token@21cfef2b496dd8ef5b904c159339626a10ad380e # v1.11.6
+      with:
+        app-id: 4746333
+        private-key: ${{ steps.fetch-pem.outputs.pem }}
+        owner: khai-ups
+        repositories: ${{ inputs.target_repo }}
