@@ -1,0 +1,135 @@
+name: Relay token gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        required: false
+        type: string
+        default: mint
+        description: "mint or cleanup"
+      repos:
+        required: false
+        type: string
+        description: Comma-separated repos (without owner) to scope the token to.
+      caller_ref:
+        required: false
+        type: string
+        description: Caller job_workflow_ref, used for authorization mapping check.
+      key:
+        required: true
+        type: string
+        description: Per-run relay key (run_id-run_attempt), used to correlate mint with cleanup.
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gate:
+    name: ${{ inputs.operation }} relay token
+    runs-on: ubuntu-latest
+    steps:
+      - id: gcp-auth
+        name: Authenticate to GCP (pilot-watch-provider)
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
+        with:
+          project_id: upsidr-platform-dev
+          workload_identity_provider: projects/41914822026/locations/global/workloadIdentityPools/github-pilot/providers/pilot-watch-provider
+          token_format: access_token
+
+      - id: auth-check
+        name: Check caller authorization
+        if: inputs.operation == 'mint'
+        shell: bash
+        run: |
+          # Authorization mapping: "<job_workflow_ref> <allowed_repos_csv>"
+          # Each line: one authorized caller and the repos it may request.
+          MAPPING=$(cat <<'MAPPING'
+          khai-ups/pilot-caller/.github/workflows/read-terragrunt.yml@refs/heads/main pilot-terragrunt-modules,pilot-module-b
+          MAPPING
+          )
+
+          CALLER="${{ inputs.caller_ref }}"
+          REPOS="${{ inputs.repos }}"
+
+          ALLOWED=""
+          while IFS= read -r LINE; do
+            LINE="${LINE#"${LINE%%[![:space:]]*}"}"
+            [[ -z "$LINE" ]] && continue
+            REF="${LINE%% *}"
+            ALLOWED_CSV="${LINE#* }"
+            if [[ "$REF" == "$CALLER" ]]; then
+              ALLOWED="$ALLOWED_CSV"
+              break
+            fi
+          done <<< "$MAPPING"
+
+          if [[ -z "$ALLOWED" ]]; then
+            echo "UNAUTHORIZED: $CALLER not in mapping"
+            exit 1
+          fi
+
+          IFS=',' read -ra REQUESTED <<< "$REPOS"
+          for R in "${REQUESTED[@]}"; do
+            R="${R// /}"
+            if ! echo ",$ALLOWED," | grep -qF ",${R},"; then
+              echo "UNAUTHORIZED: $R not allowed for $CALLER (allowed: $ALLOWED)"
+              exit 1
+            fi
+          done
+
+          echo "Authorization OK: $CALLER -> $REPOS"
+
+      - id: fetch-pem
+        name: Fetch App PEM
+        if: inputs.operation == 'mint'
+        uses: google-github-actions/get-secretmanager-secrets@95a0b09b8348ef3d02c68c6ba5662a037e78d713 # v2.1.4
+        with:
+          secrets: |-
+            pem:projects/upsidr-platform-dev/secrets/pilot-watch-github-app-pem
+
+      - id: app-token
+        name: Mint installation token
+        if: inputs.operation == 'mint'
+        uses: actions/create-github-app-token@21cfef2b496dd8ef5b904c159339626a10ad380e # v1.11.6
+        with:
+          app-id: 4746333
+          private-key: ${{ steps.fetch-pem.outputs.pem }}
+          owner: khai-ups
+          repositories: ${{ inputs.repos }}
+
+      - name: Write token to SM relay
+        if: inputs.operation == 'mint'
+        shell: bash
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+        run: |
+          printf '%s' "$TOKEN" | \
+            gcloud secrets versions add pilot-token-relay \
+              --project=upsidr-platform-dev \
+              --data-file=-
+          echo "key=${{ inputs.key }} written to pilot-token-relay"
+
+      - name: Destroy relay version (cleanup)
+        if: inputs.operation == 'cleanup'
+        shell: bash
+        env:
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+        run: |
+          VERSION=$(gcloud secrets versions list pilot-token-relay \
+            --project=upsidr-platform-dev \
+            --filter="state=ENABLED" \
+            --sort-by="~createTime" \
+            --limit=1 \
+            --format="value(name)")
+          if [[ -n "$VERSION" ]]; then
+            gcloud secrets versions destroy "$VERSION" \
+              --secret=pilot-token-relay \
+              --project=upsidr-platform-dev \
+              --quiet
+            echo "Destroyed relay version: $VERSION (key=${{ inputs.key }})"
+          else
+            echo "No enabled version found to destroy (already cleaned up?)"
+          fi
