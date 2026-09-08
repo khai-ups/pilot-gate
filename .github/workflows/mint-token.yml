@@ -97,6 +97,7 @@ jobs:
           private-key: ${{ steps.fetch-pem.outputs.pem }}
           owner: khai-ups
           repositories: ${{ inputs.repos }}
+          skip-token-revoke: true
 
       - name: Write token to SM relay
         if: inputs.operation == 'mint'
