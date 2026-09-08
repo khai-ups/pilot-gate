@@ -131,7 +131,6 @@ runs:
         TOKEN=$(gcloud secrets versions access latest \
           --secret=pilot-token-relay \
           --project=upsidr-platform-dev)
-        echo "::add-mask::$TOKEN"
         echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
     - id: dispatch-cleanup
