@@ -36,7 +36,6 @@ jobs:
         with:
           project_id: upsidr-platform-dev
           workload_identity_provider: projects/41914822026/locations/global/workloadIdentityPools/github-pilot/providers/pilot-watch-provider
-          token_format: access_token
 
       - id: auth-check
         name: Check caller authorization
@@ -104,7 +103,6 @@ jobs:
         shell: bash
         env:
           TOKEN: ${{ steps.app-token.outputs.token }}
-          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
         run: |
           printf '%s' "$TOKEN" | \
             gcloud secrets versions add pilot-token-relay \
@@ -115,8 +113,6 @@ jobs:
       - name: Destroy relay version (cleanup)
         if: inputs.operation == 'cleanup'
         shell: bash
-        env:
-          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
         run: |
           VERSION=$(gcloud secrets versions list pilot-token-relay \
             --project=upsidr-platform-dev \

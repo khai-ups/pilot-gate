@@ -39,7 +39,6 @@ runs:
       with:
         project_id: upsidr-platform-dev
         workload_identity_provider: projects/41914822026/locations/global/workloadIdentityPools/github-pilot/providers/pilot-caller-provider
-        token_format: access_token
 
     - id: fetch-trigger-pem
       name: Fetch trigger App PEM
@@ -128,8 +127,6 @@ runs:
     - id: read-sm
       name: Read token from SM relay
       shell: bash
-      env:
-        CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
       run: |
         TOKEN=$(gcloud secrets versions access latest \
           --secret=pilot-token-relay \
