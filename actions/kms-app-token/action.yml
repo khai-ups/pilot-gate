@@ -1,0 +1,106 @@
+name: GitHub App token signed in Cloud KMS
+description: >
+  Mints a GitHub App installation token without the App private key ever being
+  in the job. The job gets a GCP identity through Workload Identity Federation
+  (no service account), builds the App JWT, has Cloud KMS sign it with the
+  imported App key, and exchanges the JWT for an installation token.
+  Who may sign is decided by the cryptoKey IAM policy (roles/cloudkms.signer on
+  pool principalSets). The token must be minted in the job that uses it: masked
+  values do not survive job outputs.
+  Composite actions have no post step: call ../revoke-token with if: always().
+
+inputs:
+  client-id:
+    required: true
+    description: GitHub App client ID (JWT iss).
+  kms-key:
+    required: true
+    description: cryptoKey name in the keyring (read | write).
+  kms-key-version:
+    required: false
+    description: cryptoKey version holding the App key.
+    default: "1"
+  repositories:
+    required: true
+    description: Comma-separated repo names (no owner). The first one is used to find the installation.
+  permissions:
+    required: true
+    description: 'JSON object, for example {"contents":"read"}. Must be a subset of the App permissions.'
+  owner:
+    required: false
+    description: Installation owner (user or org).
+    default: khai-ups
+  project:
+    required: false
+    description: GCP project with the keyring.
+    default: upsidr-platform-dev
+  location:
+    required: false
+    description: KMS location.
+    default: asia-northeast1
+  keyring:
+    required: false
+    description: KMS keyring.
+    default: plf3262-pilot
+  workload-identity-provider:
+    required: false
+    description: WIF provider resource name.
+    default: projects/41914822026/locations/global/workloadIdentityPools/plf3262-pilot/providers/github
+
+outputs:
+  token:
+    description: Installation token, masked, valid for 1 hour.
+    value: ${{ steps.mint.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: GCP identity (direct WIF, no service account)
+      uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
+      with:
+        project_id: ${{ inputs.project }}
+        workload_identity_provider: ${{ inputs.workload-identity-provider }}
+
+    - id: mint
+      name: Sign App JWT in KMS and exchange it
+      shell: bash
+      env:
+        CLIENT_ID: ${{ inputs.client-id }}
+        KMS_KEY: ${{ inputs.kms-key }}
+        KMS_VERSION: ${{ inputs.kms-key-version }}
+        REPOSITORIES: ${{ inputs.repositories }}
+        PERMISSIONS: ${{ inputs.permissions }}
+        OWNER: ${{ inputs.owner }}
+        PROJECT: ${{ inputs.project }}
+        LOCATION: ${{ inputs.location }}
+        KEYRING: ${{ inputs.keyring }}
+      run: |
+        set -euo pipefail
+        b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+        work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+
+        now=$(date +%s)
+        header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+        payload=$(jq -nc --arg iss "$CLIENT_ID" --argjson iat $((now - 60)) --argjson exp $((now + 540)) \
+          '{iat: $iat, exp: $exp, iss: $iss}' | b64url)
+        printf '%s.%s' "$header" "$payload" > "$work/in"
+
+        # gcloud hashes the input locally (SHA-256) and KMS signs that digest = RS256. Refused here unless the key's IAM lists this job.
+        gcloud kms asymmetric-sign \
+          --project="$PROJECT" --location="$LOCATION" --keyring="$KEYRING" \
+          --key="$KMS_KEY" --version="$KMS_VERSION" --digest-algorithm=sha256 \
+          --input-file="$work/in" --signature-file="$work/sig"
+        jwt="$header.$payload.$(b64url < "$work/sig")"
+        echo "::add-mask::$jwt"
+
+        api() { curl -sS --fail-with-body -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+        first_repo=${REPOSITORIES%%,*}
+        inst=$(api -H "Authorization: Bearer $jwt" "https://api.github.com/repos/$OWNER/$first_repo/installation" | jq -r .id)
+        body=$(jq -nc --arg r "$REPOSITORIES" --argjson p "$PERMISSIONS" \
+          '{repositories: ($r | split(",") | map(gsub("^\\s+|\\s+$"; ""))), permissions: $p}')
+        resp=$(api -X POST -H "Authorization: Bearer $jwt" "https://api.github.com/app/installations/$inst/access_tokens" -d "$body")
+        token=$(jq -r .token <<<"$resp")
+        if [ -z "$token" ] || [ "$token" = null ]; then echo "no token in the response" >&2; exit 1; fi
+        echo "::add-mask::$token"
+        echo "token=$token" >> "$GITHUB_OUTPUT"
+        echo "Minted: installation $inst, repositories [$REPOSITORIES], permissions $(jq -c .permissions <<<"$resp"), expires $(jq -r .expires_at <<<"$resp")"
