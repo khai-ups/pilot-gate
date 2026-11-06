@@ -1,0 +1,48 @@
+name: KMS mint check (reusable, T6)
+
+# T6: mints with the write key from inside a reusable workflow.
+# The key's IAM binds attribute.repo_ref = "<caller repository>@<ref>" (refs/heads/main only),
+# so the caller repo decides, not this file. pull_request_target maps to a value that never matches.
+
+on:
+  workflow_call: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: OIDC claims GCP sees
+        uses: khai-ups/pilot-gate/actions/show-oidc-claims@main
+
+      - id: mint
+        name: Mint with the write key (actions read only)
+        continue-on-error: true
+        uses: khai-ups/pilot-gate/actions/kms-app-token@main
+        with:
+          client-id: Iv23liPdDaVVzygCVHGV # secrety-access
+          kms-key: write
+          repositories: pilot-delivery
+          permissions: '{"actions":"read"}'
+
+      - name: "T6: allowed only for a bound repo on main, never pull_request_target"
+        env:
+          OUTCOME: ${{ steps.mint.outcome }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          case "$REPO" in khai-ups/pilot-caller|khai-ups/pilot-delivery) bound=yes ;; *) bound=no ;; esac
+          if [ "$bound" = yes ] && [ "$REF" = refs/heads/main ] && [ "$EVENT" != pull_request_target ]; then want=success; else want=failure; fi
+          echo "repo=$REPO ref=$REF event=$EVENT want=$want got=$OUTCOME"
+          [ "$OUTCOME" = "$want" ] || { echo "FAIL"; exit 1; }
+          echo "OK: $want (via reusable workflow)"
+
+      - name: Revoke
+        if: always()
+        uses: khai-ups/pilot-gate/actions/revoke-token@main
+        with:
+          token: ${{ steps.mint.outputs.token }}
