@@ -1,0 +1,16 @@
+name: Show OIDC claims
+description: Prints the claims GCP sees for this job (never the token itself). Needs permissions id-token write.
+
+runs:
+  using: composite
+  steps:
+    - name: Decode the job's OIDC token payload
+      shell: bash
+      run: |
+        set -euo pipefail
+        raw=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://iam.googleapis.com/projects/41914822026/locations/global/workloadIdentityPools/plf3262-pilot/providers/github" | jq -r .value)
+        echo "::add-mask::$raw"
+        p=$(cut -d. -f2 <<<"$raw" | tr '_-' '/+')
+        while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+        base64 -d <<<"$p" | jq '{sub, repository, repository_owner, ref, event_name, workflow_ref, job_workflow_ref}'
