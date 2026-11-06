@@ -1,0 +1,21 @@
+name: Unbound caller (T6 negative)
+
+# T6 negative: pilot-gate is not bound on the write key. Calling the same reusable workflow
+# from here, on main, must be refused. With the old per-file binding (job_workflow_ref of the
+# reusable file) this call would have been allowed.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  via-reusable:
+    uses: ./.github/workflows/kms-mint-reusable.yml
+    permissions:
+      id-token: write
+      contents: read
